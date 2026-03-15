@@ -1,0 +1,26 @@
+{
+  "MMS7JMA9": {
+    "id": "MMS7JMA9",
+    "nome": "teste0101",
+    "preco": "9,99",
+    "descricao": "hfeshufguesgfyes"
+  },
+  "MMS7XXCD": {
+    "id": "MMS7XXCD",
+    "nome": "teste0101",
+    "preco": "9,99",
+    "descricao": "gfdsyhughusdfvs",
+    "imagem": "https://media.discordapp.net/attachments/1465471866390188134/1476380118309015604/content.png?ex=69b7fbe2&is=69b6aa62&hm=b2c310a1e9534ac90e5facff48c1cdd6736ce8c3d8a23d4aeea69ccf9517c359&=&format=webp&quality=lossless&width=828&height=552"
+  },
+  "MMS8L3H6": {
+    "id": "MMS8L3H6",
+    "nome": "Bots de vendas",
+    "preco": "25,00",
+    "descricao": "Bot de vendas automáticas mensalmente",
+    "imagem": "https://media.discordapp.net/attachments/1465471866390188134/1476380118309015604/content.png?ex=69b7fbe2&is=69b6aa62&hm=b2c310a1e9534ac90e5facff48c1cdd6736ce8c3d8a23d4aeea69ccf9517c359&=&format=webp&quality=lossless&width=828&height=552",
+    "variacoes": [
+      "bot 1",
+      "bot 2"
+    ]
+  }
+}
