@@ -1,4 +1,3 @@
-require("dotenv").config();
 // =====================================================
 //   BOT DE LOJA — discord.js v14 | Prefixo: !
 //   ZStore
@@ -41,9 +40,10 @@ const client = new Client({
 //   ARQUIVOS DE DADOS
 // =====================================================
 
-const PRODUTOS_FILE = './produtos_loja.json';
-const ESTOQUE_FILE  = './estoque.json';
-const CONFIG_FILE   = './config_loja.json';
+const PRODUTOS_FILE  = './produtos_loja.json';
+const ESTOQUE_FILE   = './estoque.json';
+const CONFIG_FILE    = './config_loja.json';
+const LICENCAS_FILE  = './licencas.json';
 
 function lerArquivo(caminho, padrao) {
     if (!fs.existsSync(caminho)) fs.writeFileSync(caminho, JSON.stringify(padrao, null, 2));
@@ -55,16 +55,17 @@ function salvarArquivo(caminho, data) {
     catch (e) { console.error(`[ERRO] Escrita em ${caminho}:`, e.message); }
 }
 
-let produtos = lerArquivo(PRODUTOS_FILE, {});
-let estoque  = lerArquivo(ESTOQUE_FILE, {});
-let config   = lerArquivo(CONFIG_FILE, {
+let produtos  = lerArquivo(PRODUTOS_FILE, {});
+let estoque   = lerArquivo(ESTOQUE_FILE, {});
+let config    = lerArquivo(CONFIG_FILE, {
     chave_pix:       'SUA_CHAVE_PIX_AQUI',
     nome_dono:       'ZStore',
     cargo_staff:     null,
     cargo_cliente:   null,
     canal_feedbacks: null,
     canal_vendas:    null,
-    canal_logs:      null
+    canal_logs:      null,
+    licenca_chave:   null
 });
 
 const salvarProdutos = () => salvarArquivo(PRODUTOS_FILE, produtos);
@@ -72,27 +73,115 @@ const salvarEstoque  = () => salvarArquivo(ESTOQUE_FILE, estoque);
 const salvarConfig   = () => salvarArquivo(CONFIG_FILE, config);
 
 // =====================================================
+//   SISTEMA DE LICENÇA
+// =====================================================
+
+/**
+ * Lê o arquivo de licenças.
+ * Estrutura: { "CHAVE": { usada: bool, guildId: string|null, ativadaEm: string|null } }
+ */
+function lerLicencas() {
+    return lerArquivo(LICENCAS_FILE, {});
+}
+
+/** Salva o arquivo de licenças. */
+function salvarLicencas(data) {
+    salvarArquivo(LICENCAS_FILE, data);
+}
+
+/**
+ * Valida uma chave de licença para um guild.
+ * Retorna: { ok: true } | { ok: false, erro: 'invalida' | 'em_uso' | 'ja_ativa' }
+ */
+function validarLicenca(chave, guildId) {
+    const licencas = lerLicencas();
+    const entrada  = licencas[chave.toUpperCase()];
+
+    if (!entrada) return { ok: false, erro: 'invalida' };
+    if (entrada.usada && entrada.guildId !== guildId) return { ok: false, erro: 'em_uso' };
+    if (entrada.usada && entrada.guildId === guildId) return { ok: false, erro: 'ja_ativa' };
+
+    return { ok: true };
+}
+
+/**
+ * Registra uma licença como usada pelo guild informado.
+ */
+function registrarLicenca(chave, guildId) {
+    const licencas  = lerLicencas();
+    licencas[chave.toUpperCase()] = {
+        usada:     true,
+        guildId:   guildId,
+        ativadaEm: new Date().toISOString()
+    };
+    salvarLicencas(licencas);
+}
+
+/**
+ * Retorna true se o servidor atual já tem uma licença ativa válida.
+ */
+function servidorLicenciado(guildId) {
+    if (!config.licenca_chave) return false;
+    const licencas = lerLicencas();
+    const entrada  = licencas[config.licenca_chave.toUpperCase()];
+    return !!(entrada && entrada.usada && entrada.guildId === guildId);
+}
+
+/** Embed de aviso: licença não ativada */
+function embedSemLicenca() {
+    return new EmbedBuilder()
+        .setTitle('🔒 Licença não ativada')
+        .setDescription('Este servidor ainda não possui uma licença ativa.\nUse o comando abaixo para ativar:')
+        .addFields({ name: '📋 Comando', value: '`!ativar <sua-chave>`' })
+        .setColor('Red')
+        .setFooter({ text: 'ZStore • Sistema de Licença' });
+}
+
+/** Embed de sucesso ao ativar */
+function embedLicencaOk(chave) {
+    return new EmbedBuilder()
+        .setTitle('✅ Licença Ativada com Sucesso!')
+        .setDescription('Seu servidor agora tem acesso completo ao **ZStore Bot**.')
+        .addFields({ name: '🔑 Chave', value: `\`${chave}\`` })
+        .setColor('Green')
+        .setTimestamp()
+        .setFooter({ text: 'ZStore • Sistema de Licença' });
+}
+
+/** Embed de erro de licença */
+function embedLicencaErro(tipo) {
+    const mensagens = {
+        invalida: { titulo: '❌ Chave Inválida',         desc: 'A chave informada não existe. Verifique e tente novamente.' },
+        em_uso:   { titulo: '⛔ Licença em Uso',         desc: 'Esta chave já está sendo utilizada em outro servidor.' },
+        ja_ativa: { titulo: '⚠️ Licença Já Ativa',       desc: 'Esta chave já está ativa neste servidor.' }
+    };
+    const { titulo, desc } = mensagens[tipo] || { titulo: '❌ Erro', desc: 'Erro desconhecido.' };
+    return new EmbedBuilder()
+        .setTitle(titulo)
+        .setDescription(desc)
+        .setColor('Red')
+        .setFooter({ text: 'ZStore • Sistema de Licença' });
+}
+
+// =====================================================
 //   ESTADO EM MEMÓRIA
 // =====================================================
 
 /**
  * tickets[canalId] = {
- *   produtoId   : string
- *   variacao    : string | null
- *   userId      : string
- *   entregue    : boolean   — true após pix_ok entregar o item
- *   avaliou     : boolean   — true após o modal de avaliação ser submetido
+ *   produtoId : string
+ *   variacao  : string | null
+ *   userId    : string
+ *   entregue  : boolean
+ *   avaliou   : boolean
  * }
  */
-const tickets = {};
-
-// painelState[userId] = { produtoId, variacaoIdx?, produtoIdCompra? }
+const tickets    = {};
 const painelState = {};
-
 let ultimoProdutoCriado = null;
 
 // =====================================================
-//   UTILITÁRIOS
+//   UTILITÁRIOS GERAIS
 // =====================================================
 
 const isAdmin = m => m.permissions.has(PermissionsBitField.Flags.Administrator);
@@ -100,9 +189,6 @@ const isStaff = m => isAdmin(m) || !!(config.cargo_staff && m.roles.cache.has(co
 
 const gerarId = () => Date.now().toString(36).toUpperCase();
 
-/**
- * Resolve um canal de texto pelo ID salvo na config, com fallback por parte do nome.
- */
 function resolverCanal(guild, idSalvo, nomeFallback) {
     if (idSalvo) {
         const c = guild.channels.cache.get(idSalvo);
@@ -114,7 +200,6 @@ function resolverCanal(guild, idSalvo, nomeFallback) {
     ) || null;
 }
 
-/** Embed de exibição de produto no painel */
 function embedProduto(p) {
     const qtd = (estoque[p.id] || []).length;
     const embed = new EmbedBuilder()
@@ -130,7 +215,6 @@ function embedProduto(p) {
     return embed;
 }
 
-/** Componentes de um produto (select de variação + botões) */
 function componentesProduto(p) {
     const rows = [];
     if (Array.isArray(p.variacoes) && p.variacoes.length > 1) {
@@ -148,10 +232,6 @@ function componentesProduto(p) {
     return rows;
 }
 
-/**
- * Constrói e retorna o Modal de avaliação.
- * customId: avaliacao_modal_<canalId>
- */
 function buildAvaliacaoModal(canalId) {
     return new ModalBuilder()
         .setCustomId(`avaliacao_modal_${canalId}`)
@@ -160,9 +240,9 @@ function buildAvaliacaoModal(canalId) {
             new ActionRowBuilder().addComponents(
                 new TextInputBuilder()
                     .setCustomId('nota')
-                    .setLabel('Nota (digite um número de 1 a 5)')
+                    .setLabel('Nota de 1 a 5 (ex: 5)')
                     .setStyle(TextInputStyle.Short)
-                    .setPlaceholder('Ex: 5')
+                    .setPlaceholder('5')
                     .setMinLength(1)
                     .setMaxLength(1)
                     .setRequired(true)
@@ -205,23 +285,56 @@ client.on('messageCreate', async (message) => {
         return col?.first()?.content ?? null;
     }
 
+    // Comandos abertos (sem licença): helpbot e ativar
+    const cmdsSemLicenca = ['helpbot', 'ativar'];
+
+    // Verifica licença para todos os outros comandos
+    if (!cmdsSemLicenca.includes(cmd) && !servidorLicenciado(message.guild.id)) {
+        return message.reply({ embeds: [embedSemLicenca()] });
+    }
+
     // -------------------------------------------------------
     //   !helpbot
     // -------------------------------------------------------
     if (cmd === 'helpbot') {
+        const licenciado = servidorLicenciado(message.guild.id);
         const embed = new EmbedBuilder()
             .setTitle('📖 Comandos — ZStore')
             .setColor('Gold')
             .setThumbnail(client.user.displayAvatarURL())
             .addFields(
-                { name: '🛒 Loja', value: '`!painelloja` — Envia produto em um canal\n`!enviaranuncio` — Reenvia o último produto criado\n`!helpbot` — Esta lista', inline: false },
-                { name: '📦 Produtos (Staff)', value: '`!criarproduto` — Cria produto com foto e variações\n`!editarproduto` — Edita um produto\n`!removerproduto` — Remove um produto\n`!listarprodutos` — Lista todos os produtos', inline: false },
-                { name: '📦 Estoque (Staff)', value: '`!adicionarestoque` — Adiciona item ao estoque\n`!verestoque` — Mostra estoque atual', inline: false },
-                { name: '🛠️ Moderação (Staff)', value: '`!clear <quantidade>` — Apaga mensagens do canal', inline: false },
-                { name: '⚙️ Config (Admin)', value: '`!setpix <chave>` — Define chave PIX\n`!setstaff @cargo` — Cargo de staff\n`!setcliente @cargo` — Cargo dado ao comprador após compra\n`!setnome <nome>` — Nome da loja\n`!setfeedbacks <#canal>` — Canal de avaliações\n`!setvendas <#canal>` — Canal de vendas\n`!setlogs <#canal>` — Canal de logs de tickets', inline: false }
+                { name: '🔑 Licença', value: '`!ativar <chave>` — Ativa a licença do servidor', inline: false },
+                { name: '🛒 Loja', value: '`!painelloja` — Envia produto em um canal\n`!enviaranuncio` — Reenvia o último produto criado', inline: false },
+                { name: '📦 Produtos (Staff)', value: '`!criarproduto` — Cria produto\n`!editarproduto` — Edita produto\n`!removerproduto` — Remove produto\n`!listarprodutos` — Lista produtos', inline: false },
+                { name: '📦 Estoque (Staff)', value: '`!adicionarestoque` — Adiciona item\n`!verestoque` — Ver estoque', inline: false },
+                { name: '🛠️ Moderação (Staff)', value: '`!clear <qtd>` — Apaga mensagens', inline: false },
+                { name: '⚙️ Config (Admin)', value: '`!setpix <chave>` — Chave PIX\n`!setstaff @cargo` — Cargo staff\n`!setcliente @cargo` — Cargo após compra\n`!setnome <nome>` — Nome da loja\n`!setfeedbacks <#canal>` — Canal avaliações\n`!setvendas <#canal>` — Canal vendas\n`!setlogs <#canal>` — Canal logs', inline: false }
             )
-            .setFooter({ text: 'ZStore • Sistema de Loja' });
+            .setFooter({ text: `ZStore • ${licenciado ? '✅ Licença Ativa' : '❌ Sem Licença — use !ativar <chave>'}` });
         return message.channel.send({ embeds: [embed] });
+    }
+
+    // -------------------------------------------------------
+    //   !ativar <chave>
+    // -------------------------------------------------------
+    if (cmd === 'ativar') {
+        if (!isAdmin(message.member))
+            return message.reply('❌ Apenas administradores podem ativar a licença.');
+
+        const chave = args[0];
+        if (!chave)
+            return message.reply('❌ Informe a chave. Exemplo: `!ativar ZSTORE-DEMO-2024`');
+
+        const resultado = validarLicenca(chave, message.guild.id);
+
+        if (!resultado.ok)
+            return message.reply({ embeds: [embedLicencaErro(resultado.erro)] });
+
+        registrarLicenca(chave, message.guild.id);
+        config.licenca_chave = chave.toUpperCase();
+        salvarConfig();
+
+        return message.reply({ embeds: [embedLicencaOk(chave.toUpperCase())] });
     }
 
     // -------------------------------------------------------
@@ -236,7 +349,8 @@ client.on('messageCreate', async (message) => {
 
         await message.delete().catch(() => {});
         const deletadas = await message.channel.bulkDelete(quantidade, true).catch(() => null);
-        if (!deletadas) return message.channel.send('❌ Não foi possível apagar as mensagens. Mensagens com mais de 14 dias não podem ser apagadas.');
+        if (!deletadas)
+            return message.channel.send('❌ Não foi possível apagar. Mensagens com mais de 14 dias não podem ser apagadas em massa.');
 
         const aviso = await message.channel.send(`🗑️ **${deletadas.size}** mensagem(ns) apagada(s).`);
         setTimeout(() => aviso.delete().catch(() => {}), 3000);
@@ -249,12 +363,13 @@ client.on('messageCreate', async (message) => {
     if (cmd === 'painelloja') {
         if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
         const lista = Object.values(produtos);
-        if (lista.length === 0) return message.reply('❌ Nenhum produto cadastrado. Use `!criarproduto` primeiro.');
+        if (lista.length === 0)
+            return message.reply('❌ Nenhum produto cadastrado. Use `!criarproduto` primeiro.');
 
         if (lista.length === 1) {
             painelState[message.author.id] = { produtoId: lista[0].id };
             return message.reply({
-                content: `📦 **${lista[0].nome}** selecionado! Escolha o canal de envio:`,
+                content: `📦 **${lista[0].nome}** selecionado! Escolha o canal:`,
                 components: [new ActionRowBuilder().addComponents(
                     new ChannelSelectMenuBuilder()
                         .setCustomId('painel_canal')
@@ -265,7 +380,7 @@ client.on('messageCreate', async (message) => {
         }
 
         return message.reply({
-            content: '📋 Escolha o produto que deseja anunciar:',
+            content: '📋 Escolha o produto para anunciar:',
             components: [new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder()
                     .setCustomId('painel_produto')
@@ -315,12 +430,12 @@ client.on('messageCreate', async (message) => {
         const descricao = await perguntar('📝 **Descrição do produto:**');
         if (!descricao) return message.channel.send('⏰ Tempo esgotado.');
 
-        const imgResp = await perguntar('🖼️ **URL da foto** (ou `pular` para nenhuma):');
+        const imgResp = await perguntar('🖼️ **URL da foto** (ou `pular`):');
         if (!imgResp) return message.channel.send('⏰ Tempo esgotado.');
         const imagem = (imgResp.toLowerCase() === 'pular' || !imgResp.startsWith('http'))
             ? null : imgResp.trim();
 
-        const varResp = await perguntar('🎛️ **Variações** separadas por vírgula (ex: `Azul, Vermelho`)\nDigite `pular` se não houver variações:');
+        const varResp = await perguntar('🎛️ **Variações** separadas por vírgula (ex: `Azul, Vermelho`)\nDigite `pular` se não houver:');
         if (!varResp) return message.channel.send('⏰ Tempo esgotado.');
         const variacoes = varResp.toLowerCase() === 'pular'
             ? [] : varResp.split(',').map(v => v.trim()).filter(Boolean);
@@ -371,7 +486,7 @@ client.on('messageCreate', async (message) => {
         if (!novoVal) return message.channel.send('⏰ Tempo esgotado.');
 
         if (c === 'imagem') {
-            produto.imagem    = novoVal.toLowerCase() === 'pular' ? null : novoVal.trim();
+            produto.imagem = novoVal.toLowerCase() === 'pular' ? null : novoVal.trim();
         } else if (c === 'variacoes') {
             produto.variacoes = novoVal.toLowerCase() === 'pular'
                 ? [] : novoVal.split(',').map(v => v.trim()).filter(Boolean);
@@ -416,7 +531,7 @@ client.on('messageCreate', async (message) => {
         lista.forEach(p => {
             const qtd = (estoque[p.id] || []).length;
             embed.addFields({
-                name: `📦 ${p.nome} (ID: ${p.id})`,
+                name:  `📦 ${p.nome} (ID: ${p.id})`,
                 value: `💰 R$ ${p.preco} | 📦 ${qtd} unid.\n${p.imagem ? '🖼️ Com foto' : '🚫 Sem foto'} | 🎛️ ${p.variacoes?.length ? p.variacoes.join(', ') : 'Sem variações'}\n${p.descricao}`,
                 inline: false
             });
@@ -457,7 +572,11 @@ client.on('messageCreate', async (message) => {
         if (lista.length === 0) return message.reply('❌ Nenhum produto cadastrado.');
 
         const embed = new EmbedBuilder().setTitle('📦 Estoque Atual').setColor('Blue');
-        lista.forEach(p => embed.addFields({ name: p.nome, value: `${(estoque[p.id] || []).length} unidade(s)`, inline: true }));
+        lista.forEach(p => embed.addFields({
+            name:   p.nome,
+            value:  `${(estoque[p.id] || []).length} unidade(s)`,
+            inline: true
+        }));
         return message.channel.send({ embeds: [embed] });
     }
 
@@ -468,59 +587,53 @@ client.on('messageCreate', async (message) => {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         config.chave_pix = args.join(' ');
         salvarConfig();
-        return message.reply(`✅ Chave PIX definida: \`${config.chave_pix}\``);
+        return message.reply(`✅ Chave PIX: \`${config.chave_pix}\``);
     }
-
     if (cmd === 'setstaff') {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         const role = message.mentions.roles.first() || { id: args[0] };
         if (!role?.id) return message.reply('❌ Mencione o cargo ou forneça o ID.');
         config.cargo_staff = role.id;
         salvarConfig();
-        return message.reply(`✅ Cargo de staff definido: <@&${config.cargo_staff}>`);
+        return message.reply(`✅ Cargo de staff: <@&${config.cargo_staff}>`);
     }
-
     if (cmd === 'setcliente') {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         const role = message.mentions.roles.first() || { id: args[0] };
-        if (!role?.id) return message.reply('❌ Mencione o cargo ou forneça o ID. Ex: `!setcliente @Cliente`');
+        if (!role?.id) return message.reply('❌ Mencione o cargo ou forneça o ID.');
         config.cargo_cliente = role.id;
         salvarConfig();
-        return message.reply(`✅ Cargo de cliente definido: <@&${config.cargo_cliente}>`);
+        return message.reply(`✅ Cargo de cliente: <@&${config.cargo_cliente}>`);
     }
-
     if (cmd === 'setnome') {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         config.nome_dono = args.join(' ');
         salvarConfig();
         return message.reply(`✅ Nome da loja: **${config.nome_dono}**`);
     }
-
     if (cmd === 'setfeedbacks') {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         const canal = message.mentions.channels.first() || message.guild.channels.cache.get(args[0]);
-        if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID. Ex: `!setfeedbacks #feedbacks`');
+        if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID.');
         config.canal_feedbacks = canal.id;
         salvarConfig();
-        return message.reply(`✅ Canal de feedbacks definido: ${canal}`);
+        return message.reply(`✅ Canal de feedbacks: ${canal}`);
     }
-
     if (cmd === 'setvendas') {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         const canal = message.mentions.channels.first() || message.guild.channels.cache.get(args[0]);
-        if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID. Ex: `!setvendas #vendas`');
+        if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID.');
         config.canal_vendas = canal.id;
         salvarConfig();
-        return message.reply(`✅ Canal de vendas definido: ${canal}`);
+        return message.reply(`✅ Canal de vendas: ${canal}`);
     }
-
     if (cmd === 'setlogs') {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         const canal = message.mentions.channels.first() || message.guild.channels.cache.get(args[0]);
-        if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID. Ex: `!setlogs #logs-tickets`');
+        if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID.');
         config.canal_logs = canal.id;
         salvarConfig();
-        return message.reply(`✅ Canal de logs definido: ${canal}`);
+        return message.reply(`✅ Canal de logs: ${canal}`);
     }
 });
 
@@ -540,7 +653,7 @@ client.on('interactionCreate', async (interaction) => {
 
         painelState[interaction.user.id] = { produtoId: interaction.values[0] };
         return interaction.update({
-            content: '📺 Produto selecionado! Agora escolha o canal de envio:',
+            content: '📺 Produto selecionado! Agora escolha o canal:',
             components: [new ActionRowBuilder().addComponents(
                 new ChannelSelectMenuBuilder()
                     .setCustomId('painel_canal')
@@ -575,7 +688,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // ---------------------------------------------------
-    //   SELECT: var_<id> — variação escolhida pelo cliente
+    //   SELECT: var_<id> — variação do produto
     // ---------------------------------------------------
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('var_')) {
         await interaction.deferUpdate();
@@ -610,7 +723,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // ---------------------------------------------------
-    //   BOTÃO: comprar_<id> — Cria ticket de compra
+    //   BOTÃO: comprar_<id>
     // ---------------------------------------------------
     if (interaction.isButton() && interaction.customId.startsWith('comprar_')) {
         const produtoId = interaction.customId.replace('comprar_', '');
@@ -621,7 +734,6 @@ client.on('interactionCreate', async (interaction) => {
         if ((estoque[produtoId] || []).length === 0)
             return interaction.reply({ content: '❌ Este produto está sem estoque no momento.', ephemeral: true });
 
-        // Resolve variação selecionada
         const state = painelState[interaction.user.id] || {};
         let variacaoTexto = null;
         if (Array.isArray(produto.variacoes) && produto.variacoes.length > 1) {
@@ -652,7 +764,13 @@ client.on('interactionCreate', async (interaction) => {
             ]
         });
 
-        tickets[canal.id] = { produtoId, variacao: variacaoTexto, userId: interaction.user.id, entregue: false, avaliou: false };
+        tickets[canal.id] = {
+            produtoId,
+            variacao:  variacaoTexto,
+            userId:    interaction.user.id,
+            entregue:  false,
+            avaliou:   false
+        };
 
         if (painelState[interaction.user.id]) {
             delete painelState[interaction.user.id].variacaoIdx;
@@ -663,8 +781,8 @@ client.on('interactionCreate', async (interaction) => {
             .setTitle('🛒 Pedido de Compra — ZStore')
             .setDescription(`Olá ${interaction.user}! Realize o pagamento via **PIX** e clique em **✅ Confirmar PIX**.`)
             .addFields(
-                { name: '📦 Produto', value: produto.nome,           inline: true },
-                { name: '💰 Valor',   value: `R$ ${produto.preco}`,  inline: true },
+                { name: '📦 Produto', value: produto.nome,          inline: true },
+                { name: '💰 Valor',   value: `R$ ${produto.preco}`, inline: true },
                 ...(variacaoTexto ? [{ name: '🎛️ Variação', value: variacaoTexto, inline: true }] : []),
                 { name: '💳 Chave PIX', value: `\`\`\`${config.chave_pix}\`\`\`` },
                 { name: '⚠️ Importante', value: '> Após pagar clique em **✅ Confirmar PIX**.\n> Não chame membros da equipe no privado.' }
@@ -675,7 +793,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await canal.send({
             content: `${interaction.user}`,
-            embeds: [embedTicket],
+            embeds:  [embedTicket],
             components: [new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId(`confirmar_pix_${canal.id}`).setLabel('✅ Confirmar PIX').setStyle(ButtonStyle.Success),
                 new ButtonBuilder().setCustomId(`fechar_ticket_${canal.id}`).setLabel('🔒 Fechar Ticket').setStyle(ButtonStyle.Secondary),
@@ -685,7 +803,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.editReply(`✅ Ticket criado! Acesse: ${canal}`);
 
-        // 📞 Log no canal de logs-tickets
+        // Log no canal de logs-tickets
         const canalLogs = resolverCanal(guild, config.canal_logs, 'logs-tickets');
         if (canalLogs) {
             const embedLog = new EmbedBuilder()
@@ -701,7 +819,7 @@ client.on('interactionCreate', async (interaction) => {
                 .setTimestamp()
                 .setFooter({ text: 'ZStore • Logs de Tickets' });
             await canalLogs.send({ content: `<@${interaction.user.id}>`, embeds: [embedLog] })
-                .catch(e => console.error('[ERRO logs-tickets]', e.message));
+                .catch(e => console.error('[ERRO logs]', e.message));
         }
         return;
     }
@@ -732,7 +850,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const canalPix = resolverCanal(interaction.guild, null, 'confirmar-pix');
         if (!canalPix)
-            return interaction.followUp({ content: '❌ Canal `confirmar-pix` não encontrado no servidor!', ephemeral: true });
+            return interaction.followUp({ content: '❌ Canal `confirmar-pix` não encontrado!', ephemeral: true });
 
         const embedPix = new EmbedBuilder()
             .setTitle('💳 Novo PIX para Confirmar — ZStore')
@@ -758,11 +876,11 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     // ---------------------------------------------------
-    //   BOTÃO: pix_ok_<canalId> — Entrega + cargo de cliente
+    //   BOTÃO: pix_ok_<canalId>
     // ---------------------------------------------------
     if (interaction.isButton() && interaction.customId.startsWith('pix_ok_')) {
         if (!isStaff(interaction.member))
-            return interaction.reply({ content: '❌ Apenas Staff pode confirmar.', ephemeral: true });
+            return interaction.reply({ content: '❌ Apenas Staff.', ephemeral: true });
 
         const canalId = interaction.customId.replace('pix_ok_', '');
         const dados   = tickets[canalId];
@@ -776,28 +894,23 @@ client.on('interactionCreate', async (interaction) => {
         const item = itens.shift();
         estoque[dados.produtoId] = itens;
         salvarEstoque();
-
         dados.entregue = true;
+
         await interaction.update({ components: [] });
 
-        const produto     = produtos[dados.produtoId];
-        const ticketCanal = interaction.guild.channels.cache.get(canalId);
-
-        // Dá o cargo de cliente ao comprador
+        // Dá cargo de cliente
         if (config.cargo_cliente) {
             const membro = await interaction.guild.members.fetch(dados.userId).catch(() => null);
-            if (membro) {
-                await membro.roles.add(config.cargo_cliente).catch(e =>
-                    console.error('[ERRO cargo_cliente]', e.message)
-                );
-            }
+            if (membro) await membro.roles.add(config.cargo_cliente).catch(e => console.error('[ERRO cargo_cliente]', e.message));
         }
 
-        // Envia entrega no ticket
+        const produto    = produtos[dados.produtoId];
+        const ticketCanal = interaction.guild.channels.cache.get(canalId);
+
         if (ticketCanal) {
             const embedEntrega = new EmbedBuilder()
                 .setTitle('✅ Produto Entregue! — ZStore')
-                .setDescription(`<@${dados.userId}>, sua compra foi confirmada! Obrigado por comprar na ZStore.`)
+                .setDescription(`<@${dados.userId}>, sua compra foi confirmada!`)
                 .addFields(
                     { name: '📦 Produto', value: produto?.nome || '?' },
                     ...(dados.variacao ? [{ name: '🎛️ Variação', value: dados.variacao }] : []),
@@ -810,14 +923,14 @@ client.on('interactionCreate', async (interaction) => {
 
             await ticketCanal.send({
                 content: `<@${dados.userId}>`,
-                embeds: [embedEntrega],
+                embeds:  [embedEntrega],
                 components: [new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId(`fechar_ticket_${canalId}`).setLabel('🔒 Fechar Ticket').setStyle(ButtonStyle.Secondary)
                 )]
             });
         }
 
-        // 💵 Notifica canal de vendas
+        // Notifica canal de vendas
         const canalVendas = resolverCanal(interaction.guild, config.canal_vendas, 'vendas');
         if (canalVendas) {
             const embedVenda = new EmbedBuilder()
@@ -850,7 +963,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const canal = interaction.guild.channels.cache.get(canalId);
         if (canal)
-            await canal.send(`<@${tickets[canalId]?.userId}> ❌ **Pagamento não confirmado.** Verifique o valor e a chave PIX e tente novamente.`);
+            await canal.send(`<@${tickets[canalId]?.userId}> ❌ **Pagamento não confirmado.** Verifique o valor e tente novamente.`);
         return;
     }
 
@@ -871,8 +984,8 @@ client.on('interactionCreate', async (interaction) => {
 
     // ---------------------------------------------------
     //   BOTÃO: fechar_ticket_<canalId>
-    //   → Se produto foi entregue e não avaliou: abre Modal
-    //   → Caso contrário: fecha direto
+    //   → Produto entregue + não avaliou → abre modal
+    //   → Caso contrário → fecha direto
     // ---------------------------------------------------
     if (interaction.isButton() && interaction.customId.startsWith('fechar_ticket_')) {
         const dados      = tickets[interaction.channel.id];
@@ -881,12 +994,9 @@ client.on('interactionCreate', async (interaction) => {
         if (!podeFechar)
             return interaction.reply({ content: '❌ Sem permissão para fechar este ticket.', ephemeral: true });
 
-        // Se produto entregue, comprador ainda não avaliou → abre modal de avaliação
-        if (dados && dados.entregue && !dados.avaliou && interaction.user.id === dados.userId) {
+        if (dados && dados.entregue && !dados.avaliou && interaction.user.id === dados.userId)
             return interaction.showModal(buildAvaliacaoModal(interaction.channel.id));
-        }
 
-        // Fecha diretamente
         await interaction.reply('🔒 Ticket sendo fechado em 5 segundos...');
         delete tickets[interaction.channel.id];
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
@@ -900,20 +1010,18 @@ client.on('interactionCreate', async (interaction) => {
         const canalId = interaction.customId.replace('avaliacao_modal_', '');
         const dados   = tickets[canalId] || tickets[interaction.channel.id];
 
-        // Valida nota
         const notaRaw = interaction.fields.getTextInputValue('nota').trim();
         const nota    = parseInt(notaRaw);
-        if (isNaN(nota) || nota < 1 || nota > 5) {
+
+        if (isNaN(nota) || nota < 1 || nota > 5)
             return interaction.reply({ content: '❌ Nota inválida. Digite um número entre **1** e **5**.', ephemeral: true });
-        }
 
         const comentario = interaction.fields.getTextInputValue('comentario').trim();
         const estrelas   = '⭐'.repeat(nota);
 
-        // Marca como avaliado
         if (dados) dados.avaliou = true;
 
-        await interaction.reply({ content: '✅ Avaliação enviada! O ticket será fechado em 5 segundos.', ephemeral: true });
+        await interaction.reply({ content: '✅ Avaliação enviada com sucesso! O ticket será fechado em 5 segundos.', ephemeral: true });
 
         const nomeProduto = dados?.produtoId
             ? (produtos[dados.produtoId]?.nome || 'Desconhecido')
@@ -932,7 +1040,6 @@ client.on('interactionCreate', async (interaction) => {
             .setTimestamp()
             .setFooter({ text: 'ZStore • Sistema de Avaliação' });
 
-        // Envia no canal de feedbacks
         const canalFeedback = resolverCanal(interaction.guild, config.canal_feedbacks, 'feedbacks');
         if (canalFeedback) {
             await canalFeedback.send({ content: `<@${interaction.user.id}>`, embeds: [embedFeed] })
@@ -941,7 +1048,6 @@ client.on('interactionCreate', async (interaction) => {
             console.warn('[AVISO] Canal de feedbacks não configurado. Use !setfeedbacks #canal');
         }
 
-        // Fecha o ticket
         delete tickets[interaction.channel.id];
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
         return;
@@ -950,9 +1056,8 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
         console.error('[ERRO interação]', err);
         try {
-            if (!interaction.replied && !interaction.deferred) {
+            if (!interaction.replied && !interaction.deferred)
                 await interaction.reply({ content: '❌ Ocorreu um erro inesperado. Tente novamente.', ephemeral: true });
-            }
         } catch (_) {}
     }
 });
@@ -960,5 +1065,4 @@ client.on('interactionCreate', async (interaction) => {
 // =====================================================
 //   LOGIN
 // =====================================================
-
 client.login(process.env.TOKEN);
