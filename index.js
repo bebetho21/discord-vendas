@@ -76,6 +76,9 @@ const salvarConfig   = () => salvarArquivo(CONFIG_FILE, config);
 //   SISTEMA DE LICENÇA
 // =====================================================
 
+/** Tempo de validade das licenças em dias. Altere aqui para ajustar. */
+const VALIDADE_DIAS = 30;
+
 /**
  * Lê o arquivo de licenças.
  * Estrutura: { "CHAVE": { usada: bool, guildId: string|null, ativadaEm: string|null } }
@@ -90,25 +93,61 @@ function salvarLicencas(data) {
 }
 
 /**
+ * Verifica se uma entrada de licença já expirou.
+ * Retorna true se a data de ativação + VALIDADE_DIAS < agora.
+ */
+function licencaExpirada(entrada) {
+    if (!entrada?.ativadaEm) return false;
+    const ativadaEm  = new Date(entrada.ativadaEm).getTime();
+    const expiraEm   = ativadaEm + VALIDADE_DIAS * 24 * 60 * 60 * 1000;
+    return Date.now() > expiraEm;
+}
+
+/**
+ * Revoga uma licença (reseta para não-usada).
+ * Chamado automaticamente quando a licença expira.
+ */
+function revogarLicenca(chave) {
+    const licencas = lerLicencas();
+    if (!licencas[chave]) return;
+    licencas[chave] = { usada: false, guildId: null, ativadaEm: null };
+    salvarLicencas(licencas);
+    // Limpa a chave do config do servidor
+    config.licenca_chave = null;
+    salvarConfig();
+    console.log(`[LICENÇA] Licença ${chave} expirada e revogada automaticamente.`);
+}
+
+/**
  * Valida uma chave de licença para um guild.
- * Retorna: { ok: true } | { ok: false, erro: 'invalida' | 'em_uso' | 'ja_ativa' }
+ * Retorna: { ok: true } | { ok: false, erro: 'invalida' | 'em_uso' | 'ja_ativa' | 'expirada' }
+ * Também revoga automaticamente licenças expiradas.
  */
 function validarLicenca(chave, guildId) {
     const licencas = lerLicencas();
-    const entrada  = licencas[chave.toUpperCase()];
+    const chaveUp  = chave.toUpperCase();
+    const entrada  = licencas[chaveUp];
 
     if (!entrada) return { ok: false, erro: 'invalida' };
+
+    // Se expirou, revoga e rejeita
+    if (entrada.usada && licencaExpirada(entrada)) {
+        revogarLicenca(chaveUp);
+        return { ok: false, erro: 'expirada' };
+    }
+
     if (entrada.usada && entrada.guildId !== guildId) return { ok: false, erro: 'em_uso' };
-    if (entrada.usada && entrada.guildId === guildId) return { ok: false, erro: 'ja_ativa' };
+    if (entrada.usada && entrada.guildId === guildId)  return { ok: false, erro: 'ja_ativa' };
 
     return { ok: true };
 }
 
 /**
  * Registra uma licença como usada pelo guild informado.
+ * Salva a data de ativação para controle de expiração.
  */
 function registrarLicenca(chave, guildId) {
-    const licencas  = lerLicencas();
+    const licencas = lerLicencas();
     licencas[chave.toUpperCase()] = {
         usada:     true,
         guildId:   guildId,
@@ -118,42 +157,76 @@ function registrarLicenca(chave, guildId) {
 }
 
 /**
- * Retorna true se o servidor atual já tem uma licença ativa válida.
+ * Verifica se o servidor tem uma licença ativa e não expirada.
+ * Se estiver expirada, revoga automaticamente e retorna false.
+ * Retorna: true | false | 'expirada' (para diferenciar o motivo)
  */
 function servidorLicenciado(guildId) {
     if (!config.licenca_chave) return false;
+
+    const chaveUp  = config.licenca_chave.toUpperCase();
     const licencas = lerLicencas();
-    const entrada  = licencas[config.licenca_chave.toUpperCase()];
-    return !!(entrada && entrada.usada && entrada.guildId === guildId);
+    const entrada  = licencas[chaveUp];
+
+    if (!entrada || !entrada.usada || entrada.guildId !== guildId) return false;
+
+    // Verifica expiração
+    if (licencaExpirada(entrada)) {
+        revogarLicenca(chaveUp);
+        return 'expirada';
+    }
+
+    return true;
 }
 
-/** Embed de aviso: licença não ativada */
+/** Retorna a data de expiração formatada em pt-BR dado a data de ativação */
+function dataExpiracao(ativadaEm) {
+    const expira = new Date(new Date(ativadaEm).getTime() + VALIDADE_DIAS * 24 * 60 * 60 * 1000);
+    return expira.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+/** Embed: licença não ativada */
 function embedSemLicenca() {
     return new EmbedBuilder()
-        .setTitle('🔒 Licença não ativada')
+        .setTitle('🔒 Licença Não Ativada')
         .setDescription('Este servidor ainda não possui uma licença ativa.\nUse o comando abaixo para ativar:')
         .addFields({ name: '📋 Comando', value: '`!ativar <sua-chave>`' })
         .setColor('Red')
         .setFooter({ text: 'ZStore • Sistema de Licença' });
 }
 
-/** Embed de sucesso ao ativar */
-function embedLicencaOk(chave) {
+/** Embed: licença expirada */
+function embedLicencaExpirada() {
+    return new EmbedBuilder()
+        .setTitle('⚠️ Licença Expirada')
+        .setDescription(`A licença deste servidor expirou após **${VALIDADE_DIAS} dias**.\nRenove ativando uma nova chave:`)
+        .addFields({ name: '📋 Comando', value: '`!ativar <nova-chave>`' })
+        .setColor('Orange')
+        .setFooter({ text: 'ZStore • Sistema de Licença' });
+}
+
+/** Embed: sucesso ao ativar */
+function embedLicencaOk(chave, ativadaEm) {
+    const expira = dataExpiracao(ativadaEm);
     return new EmbedBuilder()
         .setTitle('✅ Licença Ativada com Sucesso!')
-        .setDescription('Seu servidor agora tem acesso completo ao **ZStore Bot**.')
-        .addFields({ name: '🔑 Chave', value: `\`${chave}\`` })
+        .setDescription(`Seu servidor agora tem acesso completo ao **ZStore Bot** por **${VALIDADE_DIAS} dias**.`)
+        .addFields(
+            { name: '🔑 Chave',       value: `\`${chave}\``, inline: true },
+            { name: '📅 Expira em',   value: expira,          inline: true }
+        )
         .setColor('Green')
         .setTimestamp()
         .setFooter({ text: 'ZStore • Sistema de Licença' });
 }
 
-/** Embed de erro de licença */
+/** Embed: erro de licença */
 function embedLicencaErro(tipo) {
     const mensagens = {
-        invalida: { titulo: '❌ Chave Inválida',         desc: 'A chave informada não existe. Verifique e tente novamente.' },
-        em_uso:   { titulo: '⛔ Licença em Uso',         desc: 'Esta chave já está sendo utilizada em outro servidor.' },
-        ja_ativa: { titulo: '⚠️ Licença Já Ativa',       desc: 'Esta chave já está ativa neste servidor.' }
+        invalida:  { titulo: '❌ Chave Inválida',   desc: 'A chave informada não existe. Verifique e tente novamente.' },
+        em_uso:    { titulo: '⛔ Licença em Uso',   desc: 'Esta chave já está sendo utilizada em outro servidor.' },
+        ja_ativa:  { titulo: '⚠️ Licença Já Ativa', desc: 'Esta chave já está ativa neste servidor.' },
+        expirada:  { titulo: '⏰ Licença Expirada', desc: 'Esta chave expirou. Utilize outra chave válida.' }
     };
     const { titulo, desc } = mensagens[tipo] || { titulo: '❌ Erro', desc: 'Erro desconhecido.' };
     return new EmbedBuilder()
@@ -289,15 +362,33 @@ client.on('messageCreate', async (message) => {
     const cmdsSemLicenca = ['helpbot', 'ativar'];
 
     // Verifica licença para todos os outros comandos
-    if (!cmdsSemLicenca.includes(cmd) && !servidorLicenciado(message.guild.id)) {
-        return message.reply({ embeds: [embedSemLicenca()] });
+    if (!cmdsSemLicenca.includes(cmd)) {
+        const statusLicenca = servidorLicenciado(message.guild.id);
+        if (statusLicenca === 'expirada')
+            return message.reply({ embeds: [embedLicencaExpirada()] });
+        if (statusLicenca !== true)
+            return message.reply({ embeds: [embedSemLicenca()] });
     }
 
     // -------------------------------------------------------
     //   !helpbot
     // -------------------------------------------------------
     if (cmd === 'helpbot') {
-        const licenciado = servidorLicenciado(message.guild.id);
+        const statusLicenca = servidorLicenciado(message.guild.id);
+        let statusTexto;
+        if (statusLicenca === true) {
+            // Mostra a data de expiração no footer
+            const licencas = lerLicencas();
+            const entrada  = config.licenca_chave ? licencas[config.licenca_chave.toUpperCase()] : null;
+            statusTexto = entrada?.ativadaEm
+                ? `✅ Licença Ativa • Expira em ${dataExpiracao(entrada.ativadaEm)}`
+                : '✅ Licença Ativa';
+        } else if (statusLicenca === 'expirada') {
+            statusTexto = '⏰ Licença Expirada — use !ativar <nova-chave>';
+        } else {
+            statusTexto = '❌ Sem Licença — use !ativar <chave>';
+        }
+
         const embed = new EmbedBuilder()
             .setTitle('📖 Comandos — ZStore')
             .setColor('Gold')
@@ -310,7 +401,7 @@ client.on('messageCreate', async (message) => {
                 { name: '🛠️ Moderação (Staff)', value: '`!clear <qtd>` — Apaga mensagens', inline: false },
                 { name: '⚙️ Config (Admin)', value: '`!setpix <chave>` — Chave PIX\n`!setstaff @cargo` — Cargo staff\n`!setcliente @cargo` — Cargo após compra\n`!setnome <nome>` — Nome da loja\n`!setfeedbacks <#canal>` — Canal avaliações\n`!setvendas <#canal>` — Canal vendas\n`!setlogs <#canal>` — Canal logs', inline: false }
             )
-            .setFooter({ text: `ZStore • ${licenciado ? '✅ Licença Ativa' : '❌ Sem Licença — use !ativar <chave>'}` });
+            .setFooter({ text: `ZStore • ${statusTexto}` });
         return message.channel.send({ embeds: [embed] });
     }
 
@@ -330,11 +421,12 @@ client.on('messageCreate', async (message) => {
         if (!resultado.ok)
             return message.reply({ embeds: [embedLicencaErro(resultado.erro)] });
 
+        const agora = new Date().toISOString();
         registrarLicenca(chave, message.guild.id);
         config.licenca_chave = chave.toUpperCase();
         salvarConfig();
 
-        return message.reply({ embeds: [embedLicencaOk(chave.toUpperCase())] });
+        return message.reply({ embeds: [embedLicencaOk(chave.toUpperCase(), agora)] });
     }
 
     // -------------------------------------------------------
