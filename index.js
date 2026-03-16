@@ -29,9 +29,9 @@ const {
 // ══════════════════════════════════════════════════════════════════════
 //  CONFIGURAÇÕES — edite estes valores antes de subir no Railway
 // ══════════════════════════════════════════════════════════════════════
-const STAFF_ROLE_ID       = 'SEU_ID_CARGO_STAFF';     // ID do cargo Staff
-const CLIENT_ROLE_ID      = 'SEU_ID_CARGO_CLIENTE';   // ID do cargo Cliente
-const FEEDBACK_CHANNEL_ID = 'SEU_ID_CANAL_FEEDBACK';  // ID do canal de avaliações
+const STAFF_ROLE_ID       = '1464846409139359784';     // ID do cargo Staff
+const CLIENT_ROLE_ID      = '1464846418538926299';   // ID do cargo Cliente
+const FEEDBACK_CHANNEL_ID = '1464846455218114683';  // ID do canal de avaliações
 const PREFIX              = '!';
 
 // ══════════════════════════════════════════════════════════════════════
