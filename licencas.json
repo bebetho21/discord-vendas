@@ -1,8 +1,6 @@
+// Formato: { "CHAVE": { usada: true, guildId: "123", ativadaEm: "..." } }
 {
-  "ZSTORE-DEMO-2024": { "usada": false, "guildId": null, "ativadaEm": null },
   "ZSTORE-DEMO-2025": { "usada": false, "guildId": null, "ativadaEm": null },
-  "ZSTORE-DEMO-2026": { "usada": false, "guildId": null, "ativadaEm": null },
-  "ZSTORE-NOVA-CHAVE-002": { "usada": false, "guildId": null, "ativadaEm": null },
-  "ZSTORE-PREMIUM-001": { "usada": false, "guildId": null, "ativadaEm": null },
-  "ZSTORE-NOVA-CHAVE-001": { "usada": false, "guildId": null, "ativadaEm": null }
+  "ZSTORE-CLIENTE1": { "usada": false, "guildId": null, "ativadaEm": null },
+  "ZSTORE-CLIENTE2": { "usada": false, "guildId": null, "ativadaEm": null }
 }
