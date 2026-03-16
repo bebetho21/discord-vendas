@@ -1,4 +1,3 @@
-// Formato: { "CHAVE": { usada: true, guildId: "123", ativadaEm: "..." } }
 {
   "ZSTORE-DEMO-2025": { "usada": false, "guildId": null, "ativadaEm": null },
   "ZSTORE-CLIENTE1": { "usada": false, "guildId": null, "ativadaEm": null },
