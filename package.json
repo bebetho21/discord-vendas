@@ -1,17 +1,12 @@
 {
-  "name": "teste-bot",
+  "name": "discord-bot-v14",
   "version": "1.0.0",
-  "description": "",
+  "description": "Discord bot with ticket and product system",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "discord.js": "^14.25.1",
-    "dotenv": "^17.3.1"
+    "discord.js": "^14.25.1"
   }
 }
