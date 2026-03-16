@@ -40,8 +40,7 @@ const client = new Client({
 //   ARQUIVOS DE DADOS
 // =====================================================
 
-const PRODUTOS_FILE  = './produtos_loja.json';
-const ESTOQUE_FILE   = './estoque.json';
+const loja = require('./loja');
 const CONFIG_FILE    = './config_loja.json';
 const LICENCAS_FILE  = './licencas.json';
 
@@ -55,8 +54,6 @@ function salvarArquivo(caminho, data) {
     catch (e) { console.error(`[ERRO] Escrita em ${caminho}:`, e.message); }
 }
 
-let produtos  = lerArquivo(PRODUTOS_FILE, {});
-let estoque   = lerArquivo(ESTOQUE_FILE, {});
 let config    = lerArquivo(CONFIG_FILE, {
     chave_pix:       'SUA_CHAVE_PIX_AQUI',
     nome_dono:       'ZStore',
@@ -68,8 +65,6 @@ let config    = lerArquivo(CONFIG_FILE, {
     licenca_chave:   null
 });
 
-const salvarProdutos = () => salvarArquivo(PRODUTOS_FILE, produtos);
-const salvarEstoque  = () => salvarArquivo(ESTOQUE_FILE, estoque);
 const salvarConfig   = () => salvarArquivo(CONFIG_FILE, config);
 
 // =====================================================
@@ -251,7 +246,7 @@ function embedLicencaErro(tipo) {
  */
 const tickets    = {};
 const painelState = {};
-let ultimoProdutoCriado = null;
+const ultimoProdutoCriado = {};
 
 // =====================================================
 //   UTILITÁRIOS GERAIS
@@ -273,8 +268,9 @@ function resolverCanal(guild, idSalvo, nomeFallback) {
     ) || null;
 }
 
-function embedProduto(p) {
-    const qtd = (estoque[p.id] || []).length;
+function embedProduto(p, guildId) {
+    const estoqueGuild = loja.getEstoque(guildId);
+    const qtd = (estoqueGuild[p.id] || []).length;
     const embed = new EmbedBuilder()
         .setTitle(`🛒 ${p.nome}`)
         .setDescription(p.descricao || '\u200B')
@@ -357,6 +353,11 @@ client.on('messageCreate', async (message) => {
             .catch(() => null);
         return col?.first()?.content ?? null;
     }
+
+    // Contexto do servidor — produtos e estoque isolados por guildId
+    const guildId  = message.guild.id;
+    const produtos = loja.getProdutos(guildId);
+    const estoque  = loja.getEstoque(guildId);
 
     // Comandos abertos (sem licença): helpbot e ativar
     const cmdsSemLicenca = ['helpbot', 'ativar'];
@@ -492,12 +493,12 @@ client.on('messageCreate', async (message) => {
     // -------------------------------------------------------
     if (cmd === 'enviaranuncio') {
         if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
-        if (!ultimoProdutoCriado || !produtos[ultimoProdutoCriado])
+        if (!ultimoProdutoCriado[guildId] || !produtos[ultimoProdutoCriado[guildId]])
             return message.reply('❌ Nenhum produto criado ainda. Use `!criarproduto`.');
 
-        painelState[message.author.id] = { produtoId: ultimoProdutoCriado };
+        painelState[message.author.id] = { produtoId: ultimoProdutoCriado[guildId] };
         return message.reply({
-            content: `📢 Enviando **${produtos[ultimoProdutoCriado].nome}**. Escolha o canal:`,
+            content: `📢 Enviando **${produtos[ultimoProdutoCriado[guildId]].nome}**. Escolha o canal:`,
             components: [new ActionRowBuilder().addComponents(
                 new ChannelSelectMenuBuilder()
                     .setCustomId('painel_canal')
@@ -534,8 +535,8 @@ client.on('messageCreate', async (message) => {
 
         const id = gerarId();
         produtos[id] = { id, nome, preco, descricao, imagem, variacoes };
-        salvarProdutos();
-        ultimoProdutoCriado = id;
+        loja.salvarProdutos(guildId, produtos);
+        ultimoProdutoCriado[guildId] = id;
 
         const embed = new EmbedBuilder()
             .setTitle('✅ Produto Criado!')
@@ -585,7 +586,7 @@ client.on('messageCreate', async (message) => {
         } else {
             produto[c] = novoVal;
         }
-        salvarProdutos();
+        loja.salvarProdutos(guildId, produtos);
         return message.channel.send(`✅ Produto **${produto.nome}** atualizado!`);
     }
 
@@ -606,8 +607,8 @@ client.on('messageCreate', async (message) => {
         const nome = produtos[id].nome;
         delete produtos[id];
         delete estoque[id];
-        salvarProdutos();
-        salvarEstoque();
+        loja.salvarProdutos(guildId, produtos);
+        loja.salvarEstoque(guildId, estoque);
         return message.channel.send(`✅ Produto **${nome}** removido!`);
     }
 
@@ -651,7 +652,7 @@ client.on('messageCreate', async (message) => {
 
         if (!estoque[id]) estoque[id] = [];
         estoque[id].push(item.trim());
-        salvarEstoque();
+        loja.salvarEstoque(guildId, estoque);
         return message.channel.send(`✅ Item adicionado em **${produtos[id].nome}**! Total: ${estoque[id].length}`);
     }
 
@@ -736,6 +737,11 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     try {
 
+    // Contexto do servidor — produtos e estoque isolados por guildId
+    const guildId  = interaction.guild?.id;
+    const produtos = guildId ? loja.getProdutos(guildId) : {};
+    const estoque  = guildId ? loja.getEstoque(guildId)  : {};
+
     // ---------------------------------------------------
     //   SELECT: painel_produto
     // ---------------------------------------------------
@@ -774,7 +780,7 @@ client.on('interactionCreate', async (interaction) => {
         if (!canal)
             return interaction.reply({ content: '❌ Canal não encontrado.', ephemeral: true });
 
-        await canal.send({ embeds: [embedProduto(produto)], components: componentesProduto(produto) });
+        await canal.send({ embeds: [embedProduto(produto, guildId)], components: componentesProduto(produto) });
         delete painelState[interaction.user.id];
         return interaction.update({ content: `✅ Produto **${produto.nome}** enviado para ${canal}!`, components: [] });
     }
@@ -985,7 +991,7 @@ client.on('interactionCreate', async (interaction) => {
 
         const item = itens.shift();
         estoque[dados.produtoId] = itens;
-        salvarEstoque();
+        loja.salvarEstoque(guildId, estoque);
         dados.entregue = true;
 
         await interaction.update({ components: [] });
