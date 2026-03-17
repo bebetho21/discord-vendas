@@ -1,14 +1,5 @@
 {
- "ZSTORE-CLIENTE1": {
-  "usada": true,
-  "guildId": "123456789",
-  "ativadaEm": "2026-03-16" 
- }
-}
-{
- "ZSTORE-CLIENTE2": {
-  "usada": true,
-  "guildId": "123456789",
-  "ativadaEm": "2026-03-16"
- }
+  "632781638721": { "usada": false, "guildId": null, "ativadaEm": null },
+  "352513786127": { "usada": false, "guildId": null, "ativadaEm": null },
+  "632187368127": { "usada": false, "guildId": null, "ativadaEm": null }
 }
