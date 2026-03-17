@@ -1,6 +1,6 @@
 // =====================================================
 //   BOT DE LOJA — discord.js v14 | Prefixo: !
-//   ZStore — Multi-servidor com licença por 30 dias
+//   ZStore
 // =====================================================
 
 const {
@@ -37,17 +37,14 @@ const client = new Client({
 });
 
 // =====================================================
-//   ARQUIVOS DE DADOS — ISOLADOS POR SERVIDOR
-//
-//   Cada servidor tem sua própria pasta em ./data/<guildId>/
-//   com seus próprios arquivos de config, produtos e estoque.
-//   Assim os dados de um servidor nunca afetam o outro.
+//   ARQUIVOS DE DADOS
 // =====================================================
 
-// Arquivo global de licenças (mapeia chave → qual servidor a está usando)
-const LICENCAS_FILE = './licencas.json';
+const PRODUTOS_FILE  = './produtos_loja.json';
+const ESTOQUE_FILE   = './estoque.json';
+const CONFIG_FILE    = './config_loja.json';
+const LICENCAS_FILE  = './licencas.json';
 
-// Funções genéricas de leitura/escrita
 function lerArquivo(caminho, padrao) {
     if (!fs.existsSync(caminho)) fs.writeFileSync(caminho, JSON.stringify(padrao, null, 2));
     try { return JSON.parse(fs.readFileSync(caminho, 'utf-8')); }
@@ -58,77 +55,25 @@ function salvarArquivo(caminho, data) {
     catch (e) { console.error(`[ERRO] Escrita em ${caminho}:`, e.message); }
 }
 
-// ── Módulo "loja": acesso aos dados por servidor ──────────────────────────────
-// Cada servidor tem sua pasta ./data/<guildId>/ com config.json,
-// produtos.json e estoque.json completamente independentes.
-const loja = {
-    // Cache em memória para evitar leitura de disco a cada mensagem
-    _cache: {},
+let produtos  = lerArquivo(PRODUTOS_FILE, {});
+let estoque   = lerArquivo(ESTOQUE_FILE, {});
+let config    = lerArquivo(CONFIG_FILE, {
+    chave_pix:       'SUA_CHAVE_PIX_AQUI',
+    nome_dono:       'ZStore',
+    cargo_staff:     null,
+    cargo_cliente:   null,
+    canal_feedbacks: null,
+    canal_vendas:    null,
+    canal_logs:      null,
+    licenca_chave:   null
+});
 
-    // Garante que a pasta do servidor existe
-    _dir(guildId) {
-        const dir = `./data/${guildId}`;
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        return dir;
-    },
-
-    // Inicializa o cache para o servidor se ainda não existir
-    _init(guildId) {
-        if (!this._cache[guildId]) this._cache[guildId] = {};
-    },
-
-    // ── CONFIG ────────────────────────────────────────────────────────────────
-    getConfig(guildId) {
-        this._init(guildId);
-        if (!this._cache[guildId].config) {
-            this._cache[guildId].config = lerArquivo(
-                `${this._dir(guildId)}/config.json`,
-                {
-                    chave_pix:       'SUA_CHAVE_PIX_AQUI',
-                    nome_dono:       'ZStore',
-                    cargo_staff:     null,
-                    cargo_cliente:   null,
-                    canal_feedbacks: null,
-                    canal_vendas:    null,
-                    canal_logs:      null,
-                    licenca_chave:   null   // <-- chave ativa DESTE servidor
-                }
-            );
-        }
-        return this._cache[guildId].config;
-    },
-    saveConfig(guildId) {
-        this._init(guildId);
-        salvarArquivo(`${this._dir(guildId)}/config.json`, this._cache[guildId].config);
-    },
-
-    // ── PRODUTOS ──────────────────────────────────────────────────────────────
-    getProdutos(guildId) {
-        this._init(guildId);
-        if (!this._cache[guildId].produtos) {
-            this._cache[guildId].produtos = lerArquivo(`${this._dir(guildId)}/produtos.json`, {});
-        }
-        return this._cache[guildId].produtos;
-    },
-    saveProdutos(guildId) {
-        salvarArquivo(`${this._dir(guildId)}/produtos.json`, this._cache[guildId].produtos);
-    },
-
-    // ── ESTOQUE ───────────────────────────────────────────────────────────────
-    getEstoque(guildId) {
-        this._init(guildId);
-        if (!this._cache[guildId].estoque) {
-            this._cache[guildId].estoque = lerArquivo(`${this._dir(guildId)}/estoque.json`, {});
-        }
-        return this._cache[guildId].estoque;
-    },
-    saveEstoque(guildId) {
-        salvarArquivo(`${this._dir(guildId)}/estoque.json`, this._cache[guildId].estoque);
-    }
-};
+const salvarProdutos = () => salvarArquivo(PRODUTOS_FILE, produtos);
+const salvarEstoque  = () => salvarArquivo(ESTOQUE_FILE, estoque);
+const salvarConfig   = () => salvarArquivo(CONFIG_FILE, config);
 
 // =====================================================
-//   SISTEMA DE LICENÇA — 30 dias por servidor
+//   SISTEMA DE LICENÇA
 // =====================================================
 
 /** Tempo de validade das licenças em dias. Altere aqui para ajustar. */
@@ -149,34 +94,34 @@ function salvarLicencas(data) {
 
 /**
  * Verifica se uma entrada de licença já expirou.
+ * Retorna true se a data de ativação + VALIDADE_DIAS < agora.
  */
 function licencaExpirada(entrada) {
     if (!entrada?.ativadaEm) return false;
-    const expiraEm = new Date(entrada.ativadaEm).getTime() + VALIDADE_DIAS * 24 * 60 * 60 * 1000;
+    const ativadaEm  = new Date(entrada.ativadaEm).getTime();
+    const expiraEm   = ativadaEm + VALIDADE_DIAS * 24 * 60 * 60 * 1000;
     return Date.now() > expiraEm;
 }
 
 /**
- * Revoga uma licença expirada no arquivo de licenças E no config do servidor.
+ * Revoga uma licença (reseta para não-usada).
+ * Chamado automaticamente quando a licença expira.
  */
-function revogarLicenca(chave, guildId) {
+function revogarLicenca(chave) {
     const licencas = lerLicencas();
-    if (licencas[chave]) {
-        licencas[chave] = { usada: false, guildId: null, ativadaEm: null };
-        salvarLicencas(licencas);
-    }
-    // Limpa também no config do servidor correspondente
-    if (guildId) {
-        const cfg = loja.getConfig(guildId);
-        cfg.licenca_chave = null;
-        loja.saveConfig(guildId);
-    }
-    console.log(`[LICENÇA] ${chave} expirada e revogada (servidor: ${guildId}).`);
+    if (!licencas[chave]) return;
+    licencas[chave] = { usada: false, guildId: null, ativadaEm: null };
+    salvarLicencas(licencas);
+    // Limpa a chave do config do servidor
+    config.licenca_chave = null;
+    salvarConfig();
+    console.log(`[LICENÇA] Licença ${chave} expirada e revogada automaticamente.`);
 }
 
 /**
- * Valida uma chave para um servidor específico.
+ * Valida uma chave de licença para um guild.
  * Retorna: { ok: true } | { ok: false, erro: 'invalida' | 'em_uso' | 'ja_ativa' | 'expirada' }
+ * Também revoga automaticamente licenças expiradas.
  */
 function validarLicenca(chave, guildId) {
     const licencas = lerLicencas();
@@ -185,23 +130,21 @@ function validarLicenca(chave, guildId) {
 
     if (!entrada) return { ok: false, erro: 'invalida' };
 
-    // Expirou? Revoga e rejeita
+    // Se expirou, revoga e rejeita
     if (entrada.usada && licencaExpirada(entrada)) {
-        revogarLicenca(chaveUp, entrada.guildId);
+        revogarLicenca(chaveUp);
         return { ok: false, erro: 'expirada' };
     }
 
-    // Em uso em OUTRO servidor?
     if (entrada.usada && entrada.guildId !== guildId) return { ok: false, erro: 'em_uso' };
-
-    // Já está ativa neste servidor?
-    if (entrada.usada && entrada.guildId === guildId) return { ok: false, erro: 'ja_ativa' };
+    if (entrada.usada && entrada.guildId === guildId)  return { ok: false, erro: 'ja_ativa' };
 
     return { ok: true };
 }
 
 /**
- * Registra a chave como em uso pelo servidor informado.
+ * Registra uma licença como usada pelo guild informado.
+ * Salva a data de ativação para controle de expiração.
  */
 function registrarLicenca(chave, guildId) {
     const licencas = lerLicencas();
@@ -214,37 +157,35 @@ function registrarLicenca(chave, guildId) {
 }
 
 /**
- * Verifica se o servidor tem licença ativa e não expirada.
- * Lê do config isolado do servidor (não um global compartilhado).
- * Retorna: true | false | 'expirada'
+ * Verifica se o servidor tem uma licença ativa e não expirada.
+ * Se estiver expirada, revoga automaticamente e retorna false.
+ * Retorna: true | false | 'expirada' (para diferenciar o motivo)
  */
 function servidorLicenciado(guildId) {
-    // Lê o config DESTE servidor
-    const cfg      = loja.getConfig(guildId);
-    if (!cfg.licenca_chave) return false;
+    if (!config.licenca_chave) return false;
 
-    const chaveUp  = cfg.licenca_chave.toUpperCase();
+    const chaveUp  = config.licenca_chave.toUpperCase();
     const licencas = lerLicencas();
     const entrada  = licencas[chaveUp];
 
     if (!entrada || !entrada.usada || entrada.guildId !== guildId) return false;
 
+    // Verifica expiração
     if (licencaExpirada(entrada)) {
-        revogarLicenca(chaveUp, guildId);
+        revogarLicenca(chaveUp);
         return 'expirada';
     }
 
     return true;
 }
 
-/** Retorna a data de expiração formatada em pt-BR */
+/** Retorna a data de expiração formatada em pt-BR dado a data de ativação */
 function dataExpiracao(ativadaEm) {
     const expira = new Date(new Date(ativadaEm).getTime() + VALIDADE_DIAS * 24 * 60 * 60 * 1000);
     return expira.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-// ── Embeds do sistema de licença ─────────────────────────────────────────────
-
+/** Embed: licença não ativada */
 function embedSemLicenca() {
     return new EmbedBuilder()
         .setTitle('🔒 Licença Não Ativada')
@@ -254,6 +195,7 @@ function embedSemLicenca() {
         .setFooter({ text: 'ZStore • Sistema de Licença' });
 }
 
+/** Embed: licença expirada */
 function embedLicencaExpirada() {
     return new EmbedBuilder()
         .setTitle('⚠️ Licença Expirada')
@@ -263,50 +205,60 @@ function embedLicencaExpirada() {
         .setFooter({ text: 'ZStore • Sistema de Licença' });
 }
 
+/** Embed: sucesso ao ativar */
 function embedLicencaOk(chave, ativadaEm) {
+    const expira = dataExpiracao(ativadaEm);
     return new EmbedBuilder()
         .setTitle('✅ Licença Ativada com Sucesso!')
         .setDescription(`Seu servidor agora tem acesso completo ao **ZStore Bot** por **${VALIDADE_DIAS} dias**.`)
         .addFields(
-            { name: '🔑 Chave',     value: `\`${chave}\``,       inline: true },
-            { name: '📅 Expira em', value: dataExpiracao(ativadaEm), inline: true }
+            { name: '🔑 Chave',       value: `\`${chave}\``, inline: true },
+            { name: '📅 Expira em',   value: expira,          inline: true }
         )
         .setColor('Green')
         .setTimestamp()
         .setFooter({ text: 'ZStore • Sistema de Licença' });
 }
 
+/** Embed: erro de licença */
 function embedLicencaErro(tipo) {
-    const msgs = {
-        invalida: { titulo: '❌ Chave Inválida',    desc: 'A chave informada não existe. Verifique e tente novamente.' },
-        em_uso:   { titulo: '⛔ Licença em Uso',    desc: 'Esta chave já está sendo utilizada em outro servidor.' },
-        ja_ativa: { titulo: '⚠️ Licença Já Ativa',  desc: 'Esta chave já está ativa neste servidor.' },
-        expirada: { titulo: '⏰ Licença Expirada',  desc: 'Esta chave expirou. Utilize outra chave válida.' }
+    const mensagens = {
+        invalida:  { titulo: '❌ Chave Inválida',   desc: 'A chave informada não existe. Verifique e tente novamente.' },
+        em_uso:    { titulo: '⛔ Licença em Uso',   desc: 'Esta chave já está sendo utilizada em outro servidor.' },
+        ja_ativa:  { titulo: '⚠️ Licença Já Ativa', desc: 'Esta chave já está ativa neste servidor.' },
+        expirada:  { titulo: '⏰ Licença Expirada', desc: 'Esta chave expirou. Utilize outra chave válida.' }
     };
-    const { titulo, desc } = msgs[tipo] || { titulo: '❌ Erro', desc: 'Erro desconhecido.' };
-    return new EmbedBuilder().setTitle(titulo).setDescription(desc).setColor('Red')
+    const { titulo, desc } = mensagens[tipo] || { titulo: '❌ Erro', desc: 'Erro desconhecido.' };
+    return new EmbedBuilder()
+        .setTitle(titulo)
+        .setDescription(desc)
+        .setColor('Red')
         .setFooter({ text: 'ZStore • Sistema de Licença' });
 }
 
 // =====================================================
-//   ESTADO EM MEMÓRIA — ISOLADO POR SERVIDOR
-//
-//   tickets usa canalId (único no Discord, sem conflito)
-//   painelState usa "guildId:userId" para isolar por servidor
-//   ultimoProduto usa Map por guildId
+//   ESTADO EM MEMÓRIA
 // =====================================================
 
-const tickets        = {};                // canalId → dados (canal ID é globalmente único)
-const painelState    = {};                // "guildId:userId" → estado
-const ultimoProduto  = new Map();         // guildId → produtoId
+/**
+ * tickets[canalId] = {
+ *   produtoId : string
+ *   variacao  : string | null
+ *   userId    : string
+ *   entregue  : boolean
+ *   avaliou   : boolean
+ * }
+ */
+const tickets    = {};
+const painelState = {};
+let ultimoProdutoCriado = null;
 
 // =====================================================
 //   UTILITÁRIOS GERAIS
 // =====================================================
 
-// isAdmin e isStaff recebem o config do servidor específico
 const isAdmin = m => m.permissions.has(PermissionsBitField.Flags.Administrator);
-const isStaff = (m, cfg) => isAdmin(m) || !!(cfg?.cargo_staff && m.roles.cache.has(cfg.cargo_staff));
+const isStaff = m => isAdmin(m) || !!(config.cargo_staff && m.roles.cache.has(config.cargo_staff));
 
 const gerarId = () => Date.now().toString(36).toUpperCase();
 
@@ -321,7 +273,7 @@ function resolverCanal(guild, idSalvo, nomeFallback) {
     ) || null;
 }
 
-function embedProduto(p, cfg, estoque) {
+function embedProduto(p) {
     const qtd = (estoque[p.id] || []).length;
     const embed = new EmbedBuilder()
         .setTitle(`🛒 ${p.nome}`)
@@ -331,7 +283,7 @@ function embedProduto(p, cfg, estoque) {
             { name: '📦 Estoque', value: `${qtd} unidade(s)`, inline: true }
         )
         .setColor('Gold')
-        .setFooter({ text: `${cfg.nome_dono} • Pagamento via PIX` });
+        .setFooter({ text: `${config.nome_dono} • Pagamento via PIX` });
     if (p.imagem) embed.setImage(p.imagem);
     return embed;
 }
@@ -364,7 +316,9 @@ function buildAvaliacaoModal(canalId) {
                     .setLabel('Nota de 1 a 5 (ex: 5)')
                     .setStyle(TextInputStyle.Short)
                     .setPlaceholder('5')
-                    .setMinLength(1).setMaxLength(1).setRequired(true)
+                    .setMinLength(1)
+                    .setMaxLength(1)
+                    .setRequired(true)
             ),
             new ActionRowBuilder().addComponents(
                 new TextInputBuilder()
@@ -372,7 +326,9 @@ function buildAvaliacaoModal(canalId) {
                     .setLabel('Comentário sobre sua compra')
                     .setStyle(TextInputStyle.Paragraph)
                     .setPlaceholder('Conte como foi sua experiência...')
-                    .setMinLength(5).setMaxLength(500).setRequired(true)
+                    .setMinLength(5)
+                    .setMaxLength(500)
+                    .setRequired(true)
             )
         );
 }
@@ -388,19 +344,10 @@ client.on('ready', () => console.log(`✅ ${client.user.tag} online!`));
 // =====================================================
 
 client.on('messageCreate', async (message) => {
-    if (message.author.bot || !message.content.startsWith('!') || !message.guild) return;
+    if (message.author.bot || !message.content.startsWith('!')) return;
 
-    const guildId = message.guild.id;
-    const args    = message.content.slice(1).trim().split(/ +/);
-    const cmd     = args.shift().toLowerCase();
-
-    // ── Dados isolados deste servidor ──────────────────────────────────────
-    // Cada servidor tem seu próprio config, produtos e estoque.
-    // Qualquer alteração não afeta outros servidores.
-    const config   = loja.getConfig(guildId);
-    const produtos = loja.getProdutos(guildId);
-    const estoque  = loja.getEstoque(guildId);
-
+    const args = message.content.slice(1).trim().split(/ +/);
+    const cmd  = args.shift().toLowerCase();
     const filterUser = m => m.author.id === message.author.id && m.channel.id === message.channel.id;
 
     async function perguntar(texto, timeout = 60000) {
@@ -411,12 +358,12 @@ client.on('messageCreate', async (message) => {
         return col?.first()?.content ?? null;
     }
 
-    // Comandos que funcionam sem licença
+    // Comandos abertos (sem licença): helpbot e ativar
     const cmdsSemLicenca = ['helpbot', 'ativar'];
 
     // Verifica licença para todos os outros comandos
     if (!cmdsSemLicenca.includes(cmd)) {
-        const statusLicenca = servidorLicenciado(guildId);
+        const statusLicenca = servidorLicenciado(message.guild.id);
         if (statusLicenca === 'expirada')
             return message.reply({ embeds: [embedLicencaExpirada()] });
         if (statusLicenca !== true)
@@ -427,9 +374,10 @@ client.on('messageCreate', async (message) => {
     //   !helpbot
     // -------------------------------------------------------
     if (cmd === 'helpbot') {
-        const statusLicenca = servidorLicenciado(guildId);
+        const statusLicenca = servidorLicenciado(message.guild.id);
         let statusTexto;
         if (statusLicenca === true) {
+            // Mostra a data de expiração no footer
             const licencas = lerLicencas();
             const entrada  = config.licenca_chave ? licencas[config.licenca_chave.toUpperCase()] : null;
             statusTexto = entrada?.ativadaEm
@@ -446,12 +394,12 @@ client.on('messageCreate', async (message) => {
             .setColor('Gold')
             .setThumbnail(client.user.displayAvatarURL())
             .addFields(
-                { name: '🔑 Licença',         value: '`!ativar <chave>` — Ativa a licença do servidor (30 dias)',                                                                                                              inline: false },
-                { name: '🛒 Loja',            value: '`!painelloja` — Envia produto em um canal\n`!enviaranuncio` — Reenvia o último produto criado',                                                                          inline: false },
-                { name: '📦 Produtos (Staff)', value: '`!criarproduto` — Cria produto\n`!editarproduto` — Edita produto\n`!removerproduto` — Remove produto\n`!listarprodutos` — Lista produtos',                             inline: false },
-                { name: '📦 Estoque (Staff)',  value: '`!adicionarestoque` — Adiciona item\n`!verestoque` — Ver estoque',                                                                                                      inline: false },
-                { name: '🛠️ Moderação',       value: '`!clear <qtd>` — Apaga mensagens',                                                                                                                                      inline: false },
-                { name: '⚙️ Config (Admin)',   value: '`!setpix <chave>` — Chave PIX\n`!setstaff @cargo` — Cargo staff\n`!setcliente @cargo` — Cargo após compra\n`!setnome <nome>` — Nome da loja\n`!setfeedbacks <#canal>` — Canal avaliações\n`!setvendas <#canal>` — Canal vendas\n`!setlogs <#canal>` — Canal logs', inline: false }
+                { name: '🔑 Licença', value: '`!ativar <chave>` — Ativa a licença do servidor', inline: false },
+                { name: '🛒 Loja', value: '`!painelloja` — Envia produto em um canal\n`!enviaranuncio` — Reenvia o último produto criado', inline: false },
+                { name: '📦 Produtos (Staff)', value: '`!criarproduto` — Cria produto\n`!editarproduto` — Edita produto\n`!removerproduto` — Remove produto\n`!listarprodutos` — Lista produtos', inline: false },
+                { name: '📦 Estoque (Staff)', value: '`!adicionarestoque` — Adiciona item\n`!verestoque` — Ver estoque', inline: false },
+                { name: '🛠️ Moderação (Staff)', value: '`!clear <qtd>` — Apaga mensagens', inline: false },
+                { name: '⚙️ Config (Admin)', value: '`!setpix <chave>` — Chave PIX\n`!setstaff @cargo` — Cargo staff\n`!setcliente @cargo` — Cargo após compra\n`!setnome <nome>` — Nome da loja\n`!setfeedbacks <#canal>` — Canal avaliações\n`!setvendas <#canal>` — Canal vendas\n`!setlogs <#canal>` — Canal logs', inline: false }
             )
             .setFooter({ text: `ZStore • ${statusTexto}` });
         return message.channel.send({ embeds: [embed] });
@@ -468,16 +416,15 @@ client.on('messageCreate', async (message) => {
         if (!chave)
             return message.reply('❌ Informe a chave. Exemplo: `!ativar ZSTORE-DEMO-2024`');
 
-        const resultado = validarLicenca(chave, guildId);
+        const resultado = validarLicenca(chave, message.guild.id);
+
         if (!resultado.ok)
             return message.reply({ embeds: [embedLicencaErro(resultado.erro)] });
 
         const agora = new Date().toISOString();
-        registrarLicenca(chave, guildId);
-
-        // Salva a chave no config DESTE servidor (isolado)
+        registrarLicenca(chave, message.guild.id);
         config.licenca_chave = chave.toUpperCase();
-        loja.saveConfig(guildId);
+        salvarConfig();
 
         return message.reply({ embeds: [embedLicencaOk(chave.toUpperCase(), agora)] });
     }
@@ -486,7 +433,7 @@ client.on('messageCreate', async (message) => {
     //   !clear <quantidade>
     // -------------------------------------------------------
     if (cmd === 'clear') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
 
         const quantidade = parseInt(args[0]);
         if (isNaN(quantidade) || quantidade < 1 || quantidade > 100)
@@ -506,13 +453,13 @@ client.on('messageCreate', async (message) => {
     //   !painelloja
     // -------------------------------------------------------
     if (cmd === 'painelloja') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
         const lista = Object.values(produtos);
         if (lista.length === 0)
             return message.reply('❌ Nenhum produto cadastrado. Use `!criarproduto` primeiro.');
 
         if (lista.length === 1) {
-            painelState[`${guildId}:${message.author.id}`] = { produtoId: lista[0].id };
+            painelState[message.author.id] = { produtoId: lista[0].id };
             return message.reply({
                 content: `📦 **${lista[0].nome}** selecionado! Escolha o canal:`,
                 components: [new ActionRowBuilder().addComponents(
@@ -544,14 +491,13 @@ client.on('messageCreate', async (message) => {
     //   !enviaranuncio
     // -------------------------------------------------------
     if (cmd === 'enviaranuncio') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
-        const ult = ultimoProduto.get(guildId);
-        if (!ult || !produtos[ult])
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
+        if (!ultimoProdutoCriado || !produtos[ultimoProdutoCriado])
             return message.reply('❌ Nenhum produto criado ainda. Use `!criarproduto`.');
 
-        painelState[`${guildId}:${message.author.id}`] = { produtoId: ult };
+        painelState[message.author.id] = { produtoId: ultimoProdutoCriado };
         return message.reply({
-            content: `📢 Enviando **${produtos[ult].nome}**. Escolha o canal:`,
+            content: `📢 Enviando **${produtos[ultimoProdutoCriado].nome}**. Escolha o canal:`,
             components: [new ActionRowBuilder().addComponents(
                 new ChannelSelectMenuBuilder()
                     .setCustomId('painel_canal')
@@ -565,7 +511,7 @@ client.on('messageCreate', async (message) => {
     //   !criarproduto
     // -------------------------------------------------------
     if (cmd === 'criarproduto') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
 
         const nome = await perguntar('📦 **Nome do produto:**');
         if (!nome) return message.channel.send('⏰ Tempo esgotado.');
@@ -588,21 +534,19 @@ client.on('messageCreate', async (message) => {
 
         const id = gerarId();
         produtos[id] = { id, nome, preco, descricao, imagem, variacoes };
-        loja.saveProdutos(guildId);
-
-        // Registra o último produto criado NESTE servidor
-        ultimoProduto.set(guildId, id);
+        salvarProdutos();
+        ultimoProdutoCriado = id;
 
         const embed = new EmbedBuilder()
             .setTitle('✅ Produto Criado!')
             .setColor('Green')
             .addFields(
-                { name: 'Nome',          value: nome,                                     inline: true },
-                { name: 'Preço',         value: `R$ ${preco}`,                            inline: true },
-                { name: 'ID',            value: id,                                       inline: true },
-                { name: 'Descrição',     value: descricao },
-                { name: '🖼️ Foto',       value: imagem ? '✅ Definida' : '❌ Sem foto',  inline: true },
-                { name: '🎛️ Variações',  value: variacoes.length ? variacoes.join(', ') : 'Nenhuma', inline: true }
+                { name: 'Nome',         value: nome,                                     inline: true },
+                { name: 'Preço',        value: `R$ ${preco}`,                            inline: true },
+                { name: 'ID',           value: id,                                       inline: true },
+                { name: 'Descrição',    value: descricao },
+                { name: '🖼️ Foto',      value: imagem ? '✅ Definida' : '❌ Sem foto',  inline: true },
+                { name: '🎛️ Variações', value: variacoes.length ? variacoes.join(', ') : 'Nenhuma', inline: true }
             );
         if (imagem) embed.setImage(imagem);
         return message.channel.send({ embeds: [embed] });
@@ -612,7 +556,7 @@ client.on('messageCreate', async (message) => {
     //   !editarproduto
     // -------------------------------------------------------
     if (cmd === 'editarproduto') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
         const lista = Object.values(produtos);
         if (lista.length === 0) return message.reply('❌ Nenhum produto cadastrado.');
 
@@ -641,7 +585,7 @@ client.on('messageCreate', async (message) => {
         } else {
             produto[c] = novoVal;
         }
-        loja.saveProdutos(guildId);
+        salvarProdutos();
         return message.channel.send(`✅ Produto **${produto.nome}** atualizado!`);
     }
 
@@ -649,7 +593,7 @@ client.on('messageCreate', async (message) => {
     //   !removerproduto
     // -------------------------------------------------------
     if (cmd === 'removerproduto') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
         const lista = Object.values(produtos);
         if (lista.length === 0) return message.reply('❌ Nenhum produto cadastrado.');
 
@@ -662,8 +606,8 @@ client.on('messageCreate', async (message) => {
         const nome = produtos[id].nome;
         delete produtos[id];
         delete estoque[id];
-        loja.saveProdutos(guildId);
-        loja.saveEstoque(guildId);
+        salvarProdutos();
+        salvarEstoque();
         return message.channel.send(`✅ Produto **${nome}** removido!`);
     }
 
@@ -671,7 +615,7 @@ client.on('messageCreate', async (message) => {
     //   !listarprodutos
     // -------------------------------------------------------
     if (cmd === 'listarprodutos') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
         const lista = Object.values(produtos);
         if (lista.length === 0) return message.reply('❌ Nenhum produto cadastrado.');
 
@@ -691,7 +635,7 @@ client.on('messageCreate', async (message) => {
     //   !adicionarestoque
     // -------------------------------------------------------
     if (cmd === 'adicionarestoque') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
         const lista = Object.values(produtos);
         if (lista.length === 0) return message.reply('❌ Nenhum produto cadastrado.');
 
@@ -707,7 +651,7 @@ client.on('messageCreate', async (message) => {
 
         if (!estoque[id]) estoque[id] = [];
         estoque[id].push(item.trim());
-        loja.saveEstoque(guildId);
+        salvarEstoque();
         return message.channel.send(`✅ Item adicionado em **${produtos[id].nome}**! Total: ${estoque[id].length}`);
     }
 
@@ -715,7 +659,7 @@ client.on('messageCreate', async (message) => {
     //   !verestoque
     // -------------------------------------------------------
     if (cmd === 'verestoque') {
-        if (!isStaff(message.member, config)) return message.reply('❌ Sem permissão.');
+        if (!isStaff(message.member)) return message.reply('❌ Sem permissão.');
         const lista = Object.values(produtos);
         if (lista.length === 0) return message.reply('❌ Nenhum produto cadastrado.');
 
@@ -729,12 +673,12 @@ client.on('messageCreate', async (message) => {
     }
 
     // -------------------------------------------------------
-    //   CONFIG (Admin) — salva no config do servidor específico
+    //   CONFIG (Admin)
     // -------------------------------------------------------
     if (cmd === 'setpix') {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         config.chave_pix = args.join(' ');
-        loja.saveConfig(guildId);
+        salvarConfig();
         return message.reply(`✅ Chave PIX: \`${config.chave_pix}\``);
     }
     if (cmd === 'setstaff') {
@@ -742,7 +686,7 @@ client.on('messageCreate', async (message) => {
         const role = message.mentions.roles.first() || { id: args[0] };
         if (!role?.id) return message.reply('❌ Mencione o cargo ou forneça o ID.');
         config.cargo_staff = role.id;
-        loja.saveConfig(guildId);
+        salvarConfig();
         return message.reply(`✅ Cargo de staff: <@&${config.cargo_staff}>`);
     }
     if (cmd === 'setcliente') {
@@ -750,13 +694,13 @@ client.on('messageCreate', async (message) => {
         const role = message.mentions.roles.first() || { id: args[0] };
         if (!role?.id) return message.reply('❌ Mencione o cargo ou forneça o ID.');
         config.cargo_cliente = role.id;
-        loja.saveConfig(guildId);
+        salvarConfig();
         return message.reply(`✅ Cargo de cliente: <@&${config.cargo_cliente}>`);
     }
     if (cmd === 'setnome') {
         if (!isAdmin(message.member)) return message.reply('❌ Apenas administradores.');
         config.nome_dono = args.join(' ');
-        loja.saveConfig(guildId);
+        salvarConfig();
         return message.reply(`✅ Nome da loja: **${config.nome_dono}**`);
     }
     if (cmd === 'setfeedbacks') {
@@ -764,7 +708,7 @@ client.on('messageCreate', async (message) => {
         const canal = message.mentions.channels.first() || message.guild.channels.cache.get(args[0]);
         if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID.');
         config.canal_feedbacks = canal.id;
-        loja.saveConfig(guildId);
+        salvarConfig();
         return message.reply(`✅ Canal de feedbacks: ${canal}`);
     }
     if (cmd === 'setvendas') {
@@ -772,7 +716,7 @@ client.on('messageCreate', async (message) => {
         const canal = message.mentions.channels.first() || message.guild.channels.cache.get(args[0]);
         if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID.');
         config.canal_vendas = canal.id;
-        loja.saveConfig(guildId);
+        salvarConfig();
         return message.reply(`✅ Canal de vendas: ${canal}`);
     }
     if (cmd === 'setlogs') {
@@ -780,7 +724,7 @@ client.on('messageCreate', async (message) => {
         const canal = message.mentions.channels.first() || message.guild.channels.cache.get(args[0]);
         if (!canal) return message.reply('❌ Mencione o canal ou forneça o ID.');
         config.canal_logs = canal.id;
-        loja.saveConfig(guildId);
+        salvarConfig();
         return message.reply(`✅ Canal de logs: ${canal}`);
     }
 });
@@ -792,25 +736,14 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
     try {
 
-    if (!interaction.guild) return;
-    const guildId = interaction.guild.id;
-
-    // ── Dados isolados do servidor desta interação ──────────────────────────
-    const config   = loja.getConfig(guildId);
-    const produtos = loja.getProdutos(guildId);
-    const estoque  = loja.getEstoque(guildId);
-
-    // Chave para o painelState isolada por servidor + usuário
-    const stateKey = `${guildId}:${interaction.user.id}`;
-
     // ---------------------------------------------------
     //   SELECT: painel_produto
     // ---------------------------------------------------
     if (interaction.isStringSelectMenu() && interaction.customId === 'painel_produto') {
-        if (!isStaff(interaction.member, config))
+        if (!isStaff(interaction.member))
             return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
 
-        painelState[stateKey] = { produtoId: interaction.values[0] };
+        painelState[interaction.user.id] = { produtoId: interaction.values[0] };
         return interaction.update({
             content: '📺 Produto selecionado! Agora escolha o canal:',
             components: [new ActionRowBuilder().addComponents(
@@ -826,10 +759,10 @@ client.on('interactionCreate', async (interaction) => {
     //   CHANNEL SELECT: painel_canal
     // ---------------------------------------------------
     if (interaction.isChannelSelectMenu() && interaction.customId === 'painel_canal') {
-        if (!isStaff(interaction.member, config))
+        if (!isStaff(interaction.member))
             return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
 
-        const state = painelState[stateKey];
+        const state = painelState[interaction.user.id];
         if (!state?.produtoId)
             return interaction.reply({ content: '❌ Estado expirado. Rode o comando novamente.', ephemeral: true });
 
@@ -841,8 +774,8 @@ client.on('interactionCreate', async (interaction) => {
         if (!canal)
             return interaction.reply({ content: '❌ Canal não encontrado.', ephemeral: true });
 
-        await canal.send({ embeds: [embedProduto(produto, config, estoque)], components: componentesProduto(produto) });
-        delete painelState[stateKey];
+        await canal.send({ embeds: [embedProduto(produto)], components: componentesProduto(produto) });
+        delete painelState[interaction.user.id];
         return interaction.update({ content: `✅ Produto **${produto.nome}** enviado para ${canal}!`, components: [] });
     }
 
@@ -852,9 +785,9 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('var_')) {
         await interaction.deferUpdate();
         const produtoId = interaction.customId.replace('var_', '');
-        if (!painelState[stateKey]) painelState[stateKey] = {};
-        painelState[stateKey].variacaoIdx     = interaction.values[0];
-        painelState[stateKey].produtoIdCompra = produtoId;
+        if (!painelState[interaction.user.id]) painelState[interaction.user.id] = {};
+        painelState[interaction.user.id].variacaoIdx     = interaction.values[0];
+        painelState[interaction.user.id].produtoIdCompra = produtoId;
         return;
     }
 
@@ -893,7 +826,7 @@ client.on('interactionCreate', async (interaction) => {
         if ((estoque[produtoId] || []).length === 0)
             return interaction.reply({ content: '❌ Este produto está sem estoque no momento.', ephemeral: true });
 
-        const state = painelState[stateKey] || {};
+        const state = painelState[interaction.user.id] || {};
         let variacaoTexto = null;
         if (Array.isArray(produto.variacoes) && produto.variacoes.length > 1) {
             if (state.produtoIdCompra !== produtoId || state.variacaoIdx === undefined)
@@ -924,7 +857,6 @@ client.on('interactionCreate', async (interaction) => {
         });
 
         tickets[canal.id] = {
-            guildId,           // guardamos o guildId para recuperar os dados certos
             produtoId,
             variacao:  variacaoTexto,
             userId:    interaction.user.id,
@@ -932,9 +864,9 @@ client.on('interactionCreate', async (interaction) => {
             avaliou:   false
         };
 
-        if (painelState[stateKey]) {
-            delete painelState[stateKey].variacaoIdx;
-            delete painelState[stateKey].produtoIdCompra;
+        if (painelState[interaction.user.id]) {
+            delete painelState[interaction.user.id].variacaoIdx;
+            delete painelState[interaction.user.id].produtoIdCompra;
         }
 
         const embedTicket = new EmbedBuilder()
@@ -944,7 +876,7 @@ client.on('interactionCreate', async (interaction) => {
                 { name: '📦 Produto', value: produto.nome,          inline: true },
                 { name: '💰 Valor',   value: `R$ ${produto.preco}`, inline: true },
                 ...(variacaoTexto ? [{ name: '🎛️ Variação', value: variacaoTexto, inline: true }] : []),
-                { name: '💳 Chave PIX',  value: `\`\`\`${config.chave_pix}\`\`\`` },
+                { name: '💳 Chave PIX', value: `\`\`\`${config.chave_pix}\`\`\`` },
                 { name: '⚠️ Importante', value: '> Após pagar clique em **✅ Confirmar PIX**.\n> Não chame membros da equipe no privado.' }
             )
             .setColor('Yellow')
@@ -963,6 +895,7 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.editReply(`✅ Ticket criado! Acesse: ${canal}`);
 
+        // Log no canal de logs-tickets
         const canalLogs = resolverCanal(guild, config.canal_logs, 'logs-tickets');
         if (canalLogs) {
             const embedLog = new EmbedBuilder()
@@ -972,9 +905,10 @@ client.on('interactionCreate', async (interaction) => {
                     { name: '📦 Produto',   value: produto.nome,                inline: true },
                     { name: '💰 Valor',     value: `R$ ${produto.preco}`,       inline: true },
                     ...(variacaoTexto ? [{ name: '🎛️ Variação', value: variacaoTexto, inline: true }] : []),
-                    { name: '🎫 Ticket',    value: `${canal}` }
+                    { name: '🎫 Ticket',   value: `${canal}` }
                 )
-                .setColor('Blue').setTimestamp()
+                .setColor('Blue')
+                .setTimestamp()
                 .setFooter({ text: 'ZStore • Logs de Tickets' });
             await canalLogs.send({ content: `<@${interaction.user.id}>`, embeds: [embedLog] })
                 .catch(e => console.error('[ERRO logs]', e.message));
@@ -1003,11 +937,8 @@ client.on('interactionCreate', async (interaction) => {
             )]
         }).catch(() => {});
 
-        // Recupera dados do servidor correto usando o guildId salvo no ticket
-        const tGuildId   = dados.guildId || guildId;
-        const tProdutos  = loja.getProdutos(tGuildId);
-        const produto    = tProdutos[dados.produtoId];
-        const usuario    = await interaction.guild.members.fetch(dados.userId).catch(() => null);
+        const produto = produtos[dados.produtoId];
+        const usuario = await interaction.guild.members.fetch(dados.userId).catch(() => null);
 
         const canalPix = resolverCanal(interaction.guild, null, 'confirmar-pix');
         if (!canalPix)
@@ -1022,7 +953,8 @@ client.on('interactionCreate', async (interaction) => {
                 ...(dados.variacao ? [{ name: '🎛️ Variação', value: dados.variacao, inline: true }] : []),
                 { name: '🎫 Ticket',   value: `<#${canalId}>` }
             )
-            .setColor('Orange').setTimestamp();
+            .setColor('Orange')
+            .setTimestamp();
         if (produto?.imagem) embedPix.setThumbnail(produto.imagem);
 
         await canalPix.send({
@@ -1039,37 +971,32 @@ client.on('interactionCreate', async (interaction) => {
     //   BOTÃO: pix_ok_<canalId>
     // ---------------------------------------------------
     if (interaction.isButton() && interaction.customId.startsWith('pix_ok_')) {
-        if (!isStaff(interaction.member, config))
+        if (!isStaff(interaction.member))
             return interaction.reply({ content: '❌ Apenas Staff.', ephemeral: true });
 
-        const canalId    = interaction.customId.replace('pix_ok_', '');
-        const dados      = tickets[canalId];
+        const canalId = interaction.customId.replace('pix_ok_', '');
+        const dados   = tickets[canalId];
         if (!dados)
             return interaction.reply({ content: '❌ Ticket não encontrado ou já processado.', ephemeral: true });
 
-        // Usa os dados do servidor correto (onde o ticket foi criado)
-        const tGuildId   = dados.guildId || guildId;
-        const tEstoque   = loja.getEstoque(tGuildId);
-        const tProdutos  = loja.getProdutos(tGuildId);
-        const tConfig    = loja.getConfig(tGuildId);
-
-        const itens = tEstoque[dados.produtoId] || [];
+        const itens = estoque[dados.produtoId] || [];
         if (itens.length === 0)
             return interaction.reply({ content: '❌ Sem estoque! Use `!adicionarestoque`.', ephemeral: true });
 
         const item = itens.shift();
-        tEstoque[dados.produtoId] = itens;
-        loja.saveEstoque(tGuildId);
+        estoque[dados.produtoId] = itens;
+        salvarEstoque();
         dados.entregue = true;
 
         await interaction.update({ components: [] });
 
-        if (tConfig.cargo_cliente) {
+        // Dá cargo de cliente
+        if (config.cargo_cliente) {
             const membro = await interaction.guild.members.fetch(dados.userId).catch(() => null);
-            if (membro) await membro.roles.add(tConfig.cargo_cliente).catch(e => console.error('[ERRO cargo_cliente]', e.message));
+            if (membro) await membro.roles.add(config.cargo_cliente).catch(e => console.error('[ERRO cargo_cliente]', e.message));
         }
 
-        const produto    = tProdutos[dados.produtoId];
+        const produto    = produtos[dados.produtoId];
         const ticketCanal = interaction.guild.channels.cache.get(canalId);
 
         if (ticketCanal) {
@@ -1095,7 +1022,8 @@ client.on('interactionCreate', async (interaction) => {
             });
         }
 
-        const canalVendas = resolverCanal(interaction.guild, tConfig.canal_vendas, 'vendas');
+        // Notifica canal de vendas
+        const canalVendas = resolverCanal(interaction.guild, config.canal_vendas, 'vendas');
         if (canalVendas) {
             const embedVenda = new EmbedBuilder()
                 .setTitle('💵 Nova Venda Realizada! — ZStore')
@@ -1105,7 +1033,8 @@ client.on('interactionCreate', async (interaction) => {
                     { name: '💰 Valor',     value: `R$ ${produto?.preco || '?'}`, inline: true },
                     ...(dados.variacao ? [{ name: '🎛️ Variação', value: dados.variacao, inline: true }] : [])
                 )
-                .setColor('Green').setTimestamp()
+                .setColor('Green')
+                .setTimestamp()
                 .setFooter({ text: 'ZStore • Controle de Vendas' });
             if (produto?.imagem) embedVenda.setThumbnail(produto.imagem);
             await canalVendas.send({ embeds: [embedVenda] })
@@ -1118,7 +1047,7 @@ client.on('interactionCreate', async (interaction) => {
     //   BOTÃO: pix_nao_<canalId>
     // ---------------------------------------------------
     if (interaction.isButton() && interaction.customId.startsWith('pix_nao_')) {
-        if (!isStaff(interaction.member, config))
+        if (!isStaff(interaction.member))
             return interaction.reply({ content: '❌ Apenas Staff.', ephemeral: true });
 
         const canalId = interaction.customId.replace('pix_nao_', '');
@@ -1135,7 +1064,7 @@ client.on('interactionCreate', async (interaction) => {
     // ---------------------------------------------------
     if (interaction.isButton() && interaction.customId.startsWith('cancelar_ticket_')) {
         const dados      = tickets[interaction.channel.id];
-        const podeFechar = isStaff(interaction.member, config) || interaction.user.id === dados?.userId;
+        const podeFechar = isStaff(interaction.member) || interaction.user.id === dados?.userId;
         if (!podeFechar)
             return interaction.reply({ content: '❌ Sem permissão.', ephemeral: true });
 
@@ -1147,10 +1076,12 @@ client.on('interactionCreate', async (interaction) => {
 
     // ---------------------------------------------------
     //   BOTÃO: fechar_ticket_<canalId>
+    //   → Produto entregue + não avaliou → abre modal
+    //   → Caso contrário → fecha direto
     // ---------------------------------------------------
     if (interaction.isButton() && interaction.customId.startsWith('fechar_ticket_')) {
         const dados      = tickets[interaction.channel.id];
-        const podeFechar = isStaff(interaction.member, config) || interaction.user.id === dados?.userId;
+        const podeFechar = isStaff(interaction.member) || interaction.user.id === dados?.userId;
 
         if (!podeFechar)
             return interaction.reply({ content: '❌ Sem permissão para fechar este ticket.', ephemeral: true });
@@ -1184,13 +1115,8 @@ client.on('interactionCreate', async (interaction) => {
 
         await interaction.reply({ content: '✅ Avaliação enviada com sucesso! O ticket será fechado em 5 segundos.', ephemeral: true });
 
-        // Usa config do servidor correto para o canal de feedbacks
-        const tGuildId  = dados?.guildId || guildId;
-        const tConfig   = loja.getConfig(tGuildId);
-        const tProdutos = loja.getProdutos(tGuildId);
-
         const nomeProduto = dados?.produtoId
-            ? (tProdutos[dados.produtoId]?.nome || 'Desconhecido')
+            ? (produtos[dados.produtoId]?.nome || 'Desconhecido')
             : 'Desconhecido';
 
         const embedFeed = new EmbedBuilder()
@@ -1206,7 +1132,7 @@ client.on('interactionCreate', async (interaction) => {
             .setTimestamp()
             .setFooter({ text: 'ZStore • Sistema de Avaliação' });
 
-        const canalFeedback = resolverCanal(interaction.guild, tConfig.canal_feedbacks, 'feedbacks');
+        const canalFeedback = resolverCanal(interaction.guild, config.canal_feedbacks, 'feedbacks');
         if (canalFeedback) {
             await canalFeedback.send({ content: `<@${interaction.user.id}>`, embeds: [embedFeed] })
                 .catch(e => console.error('[ERRO feedbacks]', e.message));
