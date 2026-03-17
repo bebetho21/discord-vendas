@@ -2,6 +2,13 @@
  "ZSTORE-CLIENTE1": {
   "usada": true,
   "guildId": "123456789",
+  "ativadaEm": "2026-03-16" 
+ }
+}
+{
+ "ZSTORE-CLIENTE2": {
+  "usada": true,
+  "guildId": "123456789",
   "ativadaEm": "2026-03-16"
  }
 }
