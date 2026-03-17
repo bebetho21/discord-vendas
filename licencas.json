@@ -1,5 +1,7 @@
 {
-  "ZSTORE-DEMO-2025": { "usada": false, "guildId": null, "ativadaEm": null },
-  "ZSTORE-CLIENTE1": { "usada": false, "guildId": null, "ativadaEm": null },
-  "ZSTORE-CLIENTE2": { "usada": false, "guildId": null, "ativadaEm": null }
+ "ZSTORE-CLIENTE1": {
+  "usada": true,
+  "guildId": "123456789",
+  "ativadaEm": "2026-03-16"
+ }
 }
